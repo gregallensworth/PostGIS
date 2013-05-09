@@ -4,7 +4,7 @@
 -- 
 -- A function for use with pgrouting.
 -- Look over a source table of linestring geometries, and find intersections.
--- Populate a new table with the  inestring geometries split up at intersections.
+-- Populate a new table with the linestring geometries split up at intersections.
 -- The resulting linestrings will actually start and end at those intersections,
 -- making them amenable to further analysis in pgrouting, e.g. calling assign_vertex_id()
 -- 
@@ -12,23 +12,33 @@
 -- source table name; this is the table to be analyzed
 -- target table name; this table will be created and populated with the split-up segments
 -- geom field; the name of the geometry column
+-- attributes list; a comma-joined list of simple attributes to be copied to the target table
 -- bridge clause; a clause to be used as a WHERE clause, indicating segments which should NOT be split
 -- 
--- The geom field is optional, and defaults to 'geom'
 -- The bridge clause is optional, and defaults to 'FALSE' meaning that no linestrings will be exempt from splitting
 -- 
+-- The geometry field in the target table, will be called the_geom to match expectations within pgrouting.
+-- 
+-- The attributes list is not used at this time, as PL/PGSQL has no method of iterating over record fields,
+-- nor for accessing fields from a record even if you know the name. Maybe some day...
+-- 
 -- Usage:
--- SELECT pgr_create_intersections('raw_trails','routing_trails','geom',E'bridge=''yes''');
+-- SELECT pgr_create_intersections('raw_trails','routing_trails','geom','name,speedlimit',E'bridge=''yes''');
 
 
-CREATE OR REPLACE FUNCTION pgr_create_intersections(varchar,varchar,varchar='geom',varchar='FALSE')
+CREATE OR REPLACE FUNCTION pgr_create_intersections(varchar,varchar,varchar,varchar,varchar='FALSE')
 RETURNS text AS $$
 DECLARE
     old_table ALIAS FOR $1;
     new_table ALIAS FOR $2;
     geomfield ALIAS FOR $3;
-    bridgeclause ALIAS FOR $4;
-    thissegment record;
+    attributes ALIAS FOR $4;
+    bridgeclause ALIAS FOR $5;
+    targetrow record;
+    sourcerow record;
+    attriblist varchar[];
+    attrib varchar;
+    value  record;
 BEGIN
 
     -- create the target table with the same fields as the source table
@@ -41,31 +51,24 @@ BEGIN
             RETURN 'CANCEL: Target table already exists';
     END;
 
-    -- create the target table, containing the split-up geometries as split_geom
-    -- but still containing the original geom field (whatever its name was)
-    -- do this only for those NOT matching the bridgeclause
-    RAISE NOTICE 'Splitting non-bridge segments';
-    EXECUTE 'CREATE TABLE ' || new_table || ' AS SELECT '
-        || 'a.*, (ST_Dump(ST_Split(a.' || geomfield || ',b.' || geomfield || '))).geom AS split_geom'
-        || ' FROM '
-        || '(SELECT * FROM ' || old_table || ' WHERE NOT ' || bridgeclause || ') AS a'
-        || ' , '
-        || '(SELECT * FROM ' || old_table || ' WHERE NOT ' || bridgeclause || ') AS b'
-        || ' WHERE a.id != b.id';
+    -- create the blank table, but with the stated attribute fields
+    EXECUTE 'CREATE TABLE ' || new_table || ' AS SELECT ' || attributes || ',' || geomfield || ' AS the_geom ' || ' FROM ' || old_table || ' WHERE false';
 
-    -- records which DO match the bridgeclause, are inserted as-is, no splitting
-    -- but we do name it split_geom so it persists after we rename the geometry column in a moment
-    RAISE NOTICE 'Copying bridge segments as-is';
-    EXECUTE 'INSERT INTO ' || new_table || ' SELECT *,' || geomfield || ' AS split_geom FROM ' || old_table || ' WHERE ' || bridgeclause;
+    -- yay for st_node()
+    -- Take the union of all linestrings in the source table, node it, and save the raw segments to the target table
+    -- Then load the bridge segments as-is without noding
+    -- Note that this names the target geometry column the_geom to match conventions used within pgrouting
+    RAISE NOTICE 'Noding and inserting non-bridge linestrings';
+    EXECUTE 'INSERT INTO ' || new_table || ' (the_geom) SELECT '
+            || '(ST_DUMP(ST_NODE(ST_UNION(' || geomfield || ')))).geom AS the_geom FROM ' || old_table
+            || ' WHERE NOT ' || bridgeclause;
+    EXECUTE 'SELECT COUNT(*) AS howmany FROM ' || new_table INTO targetrow;
+    RAISE NOTICE '    % segments after noding', targetrow.howmany;
 
-    -- drop and rename the original geometry column so the split one is the right one
-    RAISE NOTICE 'Renaming geometry column %', geomfield;
-    EXECUTE 'ALTER TABLE ' || new_table || ' DROP COLUMN ' || geomfield;
-    EXECUTE 'ALTER TABLE ' || new_table || ' RENAME COLUMN split_geom TO ' || geomfield;
-
-    -- if this is PostGIS 1.x then we have a geometry field but no geometry_columns entry
-    -- future work: figure out the fields to make an entry into geometry_columns
-    -- if it turns out that folks are using PostGIS 1.x for new development after all...
+    RAISE NOTICE 'Inserting bridge linestrings as-is';
+    EXECUTE 'INSERT INTO ' || new_table || ' (the_geom) SELECT ' || geomfield || ' FROM ' || old_table || ' WHERE ' || bridgeclause;
+    EXECUTE 'SELECT COUNT(*) AS howmany FROM ' || new_table INTO targetrow;
+    RAISE NOTICE '    % segments after adding bridges', targetrow.howmany;
 
     -- Done!
     RETURN 'OK';
