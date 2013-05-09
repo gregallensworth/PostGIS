@@ -16,10 +16,9 @@
 -- 
 -- The geom field is optional, and defaults to 'geom'
 -- The bridge clause is optional, and defaults to 'FALSE' meaning that no linestrings will be exempt from splitting
--- In the bridge clause, prepend 'a.' to field names to disambiguate them, per the example below.
 -- 
 -- Usage:
--- SELECT pgr_create_intersections('raw_trails','routing_trails','geom',E'a.bridge=''yes''');
+-- SELECT pgr_create_intersections('raw_trails','routing_trails','geom',E'bridge=''yes''');
 
 
 CREATE OR REPLACE FUNCTION pgr_create_intersections(varchar,varchar,varchar='geom',varchar='FALSE')
@@ -46,11 +45,18 @@ BEGIN
     -- but still containing the original geom field (whatever its name was)
     -- do this only for those NOT matching the bridgeclause
     RAISE NOTICE 'Splitting non-bridge segments';
-    EXECUTE 'CREATE TABLE ' || new_table || ' AS SELECT a.*, (ST_Dump(ST_Split(a.' || geomfield || ',b.' || geomfield || '))).geom AS split_geom FROM ' || old_table || ' a, ' || old_table || ' b WHERE a.id != b.id AND NOT (' || bridgeclause || ')';
+    EXECUTE 'CREATE TABLE ' || new_table || ' AS SELECT '
+        || 'a.*, (ST_Dump(ST_Split(a.' || geomfield || ',b.' || geomfield || '))).geom AS split_geom'
+        || ' FROM '
+        || '(SELECT * FROM ' || old_table || ' WHERE NOT ' || bridgeclause || ') AS a'
+        || ' , '
+        || '(SELECT * FROM ' || old_table || ' WHERE NOT ' || bridgeclause || ') AS b'
+        || ' WHERE a.id != b.id';
 
     -- records which DO match the bridgeclause, are inserted as-is, no splitting
+    -- but we do name it split_geom so it persists after we rename the geometry column in a moment
     RAISE NOTICE 'Copying bridge segments as-is';
-    EXECUTE 'INSERT INTO ' || new_table || ' SELECT * FROM ' || old_table || ' a WHERE ' || bridgeclause;
+    EXECUTE 'INSERT INTO ' || new_table || ' SELECT *,' || geomfield || ' AS split_geom FROM ' || old_table || ' WHERE ' || bridgeclause;
 
     -- drop and rename the original geometry column so the split one is the right one
     RAISE NOTICE 'Renaming geometry column %', geomfield;
