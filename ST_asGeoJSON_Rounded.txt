@@ -1,0 +1,38 @@
+-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-- 
+-- $Id: ST_AsGeoJSON_Rounded.sql 2014-07-14 23:19Z Greg Allensworth & GreenInfo Network $
+--
+-- ST_ASGEOJSON_ROUNDED() - A PostgIS function (works in PostgIS 1 and 2) to return
+-- the same output as ST_asGeoJSON() ... but with decimal places removed.
+-- 
+-- This complements the ST_ASGEOJSON() function, with the added step of removing decimal places.
+-- The resulting WKT is often 50% smaller, resulting in much smaller & faster WKT downloads.
+-- 
+-- If you are using a SRS with small spatial units (meters or feet) then the
+-- imprecision is trivial (maximum change is 0.999 meters).
+-- 
+-- Do not attempt this with unprojected geographic coordinates (lat & lon), 
+-- as the rounding is spatially significant: one degree 60 miles at the equator, 
+-- and you don't want it rounded THAT much.
+-- 
+-- Public domain. Redistributable without limitation or restriction.
+--  
+-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+-- The ST_ASGEOJSON_ROUNDED() function
+-- Takes a geometry as an argument, return the WKT with decimals trimmed off
+-- Example usage:     SELECT ST_ASGEOJSON_ROUNDED(geom) FROM locations;
+
+CREATE OR REPLACE FUNCTION ST_ASGEOJSON_ROUNDED(geometry)
+  RETURNS character varying AS
+$BODY$
+DECLARE
+    trimmed record;
+BEGIN
+    SELECT regexp_replace(ST_ASGEOJSON($1), '\.\d+', '', 'g') AS json INTO trimmed;
+
+    return trimmed.json;
+END;
+$BODY$
+LANGUAGE plpgsql;
